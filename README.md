@@ -41,7 +41,7 @@ mdview README.md | less -R
 curl -s https://raw.githubusercontent.com/cli/cli/trunk/README.md | mdview
 ```
 
-## Preview
+## Simple Preview
 
 [![asciicast](https://asciinema.org/a/VOJaCl5d3FsVUXup.svg)](https://asciinema.org/a/VOJaCl5d3FsVUXup)
 
