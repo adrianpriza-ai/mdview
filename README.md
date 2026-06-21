@@ -1,5 +1,7 @@
 # mdview
 
+[![Build](https://github.com/adrianpriza-ai/mdview/actions/workflows/build.yml/badge.svg)](https://github.com/adrianpriza-ai/mdview/actions/workflows/build.yml)
+
 Render Markdown files in your terminal with ANSI color and formatting.
 Zero external dependencies — pure Go stdlib.
 
