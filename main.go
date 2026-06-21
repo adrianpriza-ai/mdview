@@ -115,7 +115,7 @@ func center(s string, w int) string {
         return repeat(" ", pad) + s + repeat(" ", w-l-pad)
 }
 
-// ── Inline renderer ──────────────────────────────────────────────────────────
+// Inline renderer
 
 var (
         reBoldItalic   = regexp.MustCompile(`\*{3}(.+?)\*{3}|_{3}(.+?)_{3}`)
@@ -198,7 +198,7 @@ func renderInline(s string) string {
         return s
 }
 
-// ── Block-level parser ───────────────────────────────────────────────────────
+// Block-level parser
 
 type lineKind int
 
@@ -336,7 +336,7 @@ func classifyLine(s string) parsedLine {
         return p
 }
 
-// ── Renderer ────────────────────────────────────────────────────────────────
+// Renderer
 
 type renderer struct {
         w     int
@@ -550,7 +550,7 @@ func (r *renderer) renderParagraph(lines []string) {
         }
 }
 
-// ── Main parse loop ──────────────────────────────────────────────────────────
+// Main parse loop
 
 func render(src string, w int) string {
         r := newRendererWidth(w)
@@ -724,7 +724,7 @@ func render(src string, w int) string {
         return r.out.String()
 }
 
-// ── Entry point ──────────────────────────────────────────────────────────────
+// Entry point
 
 func usage() {
         fmt.Fprintf(os.Stderr, `%smdview%s — render Markdown in your terminal
