@@ -8,7 +8,7 @@ Zero external dependencies — pure Go stdlib.
 ## Build
 
 ```bash
-cd tools/mdview
+cd mdview
 go build -o mdview .
 ```
 
