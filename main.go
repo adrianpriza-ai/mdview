@@ -443,6 +443,137 @@ func (r *renderer) renderListItem(depth int, ord bool, index int, text string) {
 	r.emit(indent + bullet + " " + renderInline(text))
 }
 
+// wrapWords splits text into lines of at most maxW visible characters,
+// breaking on word boundaries. Each element has no trailing space.
+func wrapWords(text string, maxW int) []string {
+	if maxW <= 0 {
+		return []string{text}
+	}
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{""}
+	}
+	var lines []string
+	cur := ""
+	for _, w := range words {
+		wl := visibleLen(w)
+		if cur == "" {
+			// Single word wider than the column: hard-break it.
+			if wl > maxW {
+				runes := []rune(w)
+				for len(runes) > 0 {
+					chunk := string(runes[:min(maxW, len(runes))])
+					lines = append(lines, chunk)
+					runes = runes[min(maxW, len(runes)):]
+				}
+				cur = ""
+			} else {
+				cur = w
+			}
+		} else if visibleLen(cur)+1+wl <= maxW {
+			cur += " " + w
+		} else {
+			lines = append(lines, cur)
+			cur = w
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// shrinkColWidths reduces column widths so the total table render width fits
+// within limit. Uses a proportional reduction pass, then fixes any min-col
+// violations, avoiding the O(excess) single-decrement loop.
+//
+// Table wire width = 1 + numCols*(minColW+2+1) at minimum,
+// where each column costs: leading-space + content + trailing-space + │.
+func shrinkColWidths(widths []int, limit int) []int {
+	n := len(widths)
+	if n == 0 {
+		return widths
+	}
+
+	out := make([]int, n)
+	copy(out, widths)
+
+	const minColW = 4 // minimum visible content width per column
+
+	tableWidth := func() int {
+		total := 1
+		for _, w := range out {
+			total += w + 3 // space + content + space + │
+		}
+		return total
+	}
+
+	// Fast path: already fits.
+	if tableWidth() <= limit {
+		return out
+	}
+
+	// Available content budget across all columns.
+	// Wire overhead = 1 (leading │) + numCols * 3 (space+space+│ per col).
+	budget := limit - 1 - n*3
+	if budget < n*minColW {
+		budget = n * minColW // clamp: can't do better than all-minimum columns
+	}
+
+	// Sum of natural widths.
+	total := 0
+	for _, w := range out {
+		total += w
+	}
+
+	if total == 0 {
+		return out
+	}
+
+	// Distribute budget proportionally, then enforce the minimum.
+	remaining := budget
+	for i := range out {
+		share := out[i] * budget / total
+		if share < minColW {
+			share = minColW
+		}
+		out[i] = share
+		remaining -= share
+	}
+
+	// Give leftover pixels to columns from left to right.
+	for i := range out {
+		if remaining <= 0 {
+			break
+		}
+		out[i]++
+		remaining--
+	}
+
+	// Final safety: ensure the table actually fits (rounding may overshoot by 1-2).
+	for tableWidth() > limit {
+		best := -1
+		for i, w := range out {
+			if w > minColW && (best == -1 || w > out[best]) {
+				best = i
+			}
+		}
+		if best == -1 {
+			break
+		}
+		out[best]--
+	}
+
+	return out
+}
+
 func (r *renderer) renderTable(rows []string) {
 	if len(rows) < 2 {
 		for _, row := range rows {
@@ -478,7 +609,7 @@ func (r *renderer) renderTable(rows []string) {
 		return
 	}
 
-	// Compute column widths
+	// Compute natural column widths from content.
 	numCols := 0
 	for _, row := range allRows {
 		if len(row) > numCols {
@@ -494,6 +625,9 @@ func (r *renderer) renderTable(rows []string) {
 		}
 	}
 
+	// Shrink columns if the table is wider than the terminal.
+	colWidths = shrinkColWidths(colWidths, r.w)
+
 	hline := func(left, mid, right, fill string) string {
 		parts := make([]string, numCols)
 		for i, w := range colWidths {
@@ -504,25 +638,47 @@ func (r *renderer) renderTable(rows []string) {
 
 	r.blank()
 	r.emit(hline("┌", "┬", "┐", "─"))
+
 	for ri, row := range allRows {
-		line := fgBrightBlack + "│" + reset
+		// Word-wrap every cell independently, collecting the max line count.
+		wrapped := make([][]string, numCols)
+		maxLines := 1
 		for ci := 0; ci < numCols; ci++ {
-			cell := ""
+			raw := ""
 			if ci < len(row) {
-				cell = row[ci]
+				raw = row[ci]
 			}
-			if ri == 0 {
-				cell = bold + fgBrightWhite + cell + reset
-			} else {
-				cell = renderInline(cell)
+			// Apply inline markup (header row gets bold styling later).
+			plain := renderInline(raw)
+			lines := wrapWords(plain, colWidths[ci])
+			wrapped[ci] = lines
+			if len(lines) > maxLines {
+				maxLines = len(lines)
 			}
-			line += " " + padRight(cell, colWidths[ci]) + " " + fgBrightBlack + "│" + reset
 		}
-		r.emit(line)
+
+		// Render each sub-line of this row.
+		for li := 0; li < maxLines; li++ {
+			line := fgBrightBlack + "│" + reset
+			for ci := 0; ci < numCols; ci++ {
+				cellLine := ""
+				if li < len(wrapped[ci]) {
+					cellLine = wrapped[ci][li]
+				}
+				if ri == 0 {
+					// Header: bold + bright white on every line segment.
+					cellLine = bold + fgBrightWhite + ansiEscapeRe.ReplaceAllString(cellLine, "") + reset
+				}
+				line += " " + padRight(cellLine, colWidths[ci]) + " " + fgBrightBlack + "│" + reset
+			}
+			r.emit(line)
+		}
+
 		if ri == 0 {
 			r.emit(hline("├", "┼", "┤", "─"))
 		}
 	}
+
 	r.emit(hline("└", "┴", "┘", "─"))
 	r.blank()
 }
