@@ -8,7 +8,7 @@ Zero external dependencies — pure Go stdlib.
 ## Build
 
 ```bash
-cd mdview
+cd tools/mdview
 go build -o mdview .
 ```
 
@@ -40,6 +40,10 @@ mdview README.md | less -R
 # View a remote file
 curl -s https://raw.githubusercontent.com/cli/cli/trunk/README.md | mdview
 ```
+
+## Preview
+
+[![asciicast](https://asciinema.org/a/VOJaCl5d3FsVUXup.svg)](https://asciinema.org/a/VOJaCl5d3FsVUXup)
 
 ## Supported Markdown
 
