@@ -1,889 +1,1006 @@
 package main
 
 import (
-	"bufio"
-	"fmt"
-	"os"
-	"regexp"
-	"strconv"
-	"strings"
-	"syscall"
-	"unicode/utf8"
-	"unsafe"
+        "bufio"
+        "fmt"
+        "os"
+        "regexp"
+        "strconv"
+        "strings"
+        "syscall"
+        "unicode/utf8"
+        "unsafe"
 )
 
-// ANSI escape codes
+// ANSI codes
+
 const (
-	reset     = "\033[0m"
-	bold      = "\033[1m"
-	italic    = "\033[3m"
-	dim       = "\033[2m"
-	underline = "\033[4m"
-	strike    = "\033[9m"
+        reset     = "\033[0m"
+        bold      = "\033[1m"
+        italic    = "\033[3m"
+        underline = "\033[4m"
+        strike    = "\033[9m"
 
-	fgBlack   = "\033[30m"
-	fgRed     = "\033[31m"
-	fgGreen   = "\033[32m"
-	fgYellow  = "\033[33m"
-	fgBlue    = "\033[34m"
-	fgMagenta = "\033[35m"
-	fgCyan    = "\033[36m"
-	fgWhite   = "\033[37m"
+        fgRed     = "\033[31m"
+        fgGreen   = "\033[32m"
+        fgYellow  = "\033[33m"
+        fgBlue    = "\033[34m"
+        fgMagenta = "\033[35m"
+        fgCyan    = "\033[36m"
 
-	fgBrightBlack   = "\033[90m"
-	fgBrightRed     = "\033[91m"
-	fgBrightGreen   = "\033[92m"
-	fgBrightYellow  = "\033[93m"
-	fgBrightBlue    = "\033[94m"
-	fgBrightMagenta = "\033[95m"
-	fgBrightCyan    = "\033[96m"
-	fgBrightWhite   = "\033[97m"
+        fgBrightBlack   = "\033[90m"
+        fgBrightGreen   = "\033[92m"
+        fgBrightYellow  = "\033[93m"
+        fgBrightBlue    = "\033[94m"
+        fgBrightMagenta = "\033[95m"
+        fgBrightCyan    = "\033[96m"
+        fgBrightWhite   = "\033[97m"
 
-	bgBlack = "\033[40m"
-	bgWhite = "\033[47m"
-
-	bgBrightBlack = "\033[100m"
+        bgBrightBlack = "\033[100m"
 )
 
-// winsize mirrors the kernel struct used by TIOCGWINSZ.
+// Terminal width
+
 type winsize struct {
-	Row    uint16
-	Col    uint16
-	Xpixel uint16
-	Ypixel uint16
+        Row, Col, Xpixel, Ypixel uint16
 }
 
-// termWidth queries the terminal dimensions via ioctl.
-// It tries stdout first, then stderr, then stdin.
-// Falls back to 80 columns when none of them is a tty (e.g. when piping).
+// termWidth queries TIOCGWINSZ, falling back to 80.
 func termWidth() int {
-	for _, fd := range []uintptr{
-		uintptr(syscall.Stdout),
-		uintptr(syscall.Stderr),
-		uintptr(syscall.Stdin),
-	} {
-		ws := &winsize{}
-		rc, _, _ := syscall.Syscall(
-			syscall.SYS_IOCTL,
-			fd,
-			syscall.TIOCGWINSZ,
-			uintptr(unsafe.Pointer(ws)),
-		)
-		if rc == 0 && ws.Col > 0 {
-			return int(ws.Col)
-		}
-	}
-	return 80 // fallback when not attached to a tty
+        for _, fd := range []uintptr{
+                uintptr(syscall.Stdout),
+                uintptr(syscall.Stderr),
+                uintptr(syscall.Stdin),
+        } {
+                ws := &winsize{}
+                rc, _, _ := syscall.Syscall(syscall.SYS_IOCTL, fd,
+                        syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(ws)))
+                if rc == 0 && ws.Col > 0 {
+                        return int(ws.Col)
+                }
+        }
+        return 80
 }
 
-// repeat returns a string of n copies of s.
-func repeat(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	return strings.Repeat(s, n)
+// String helpers
+
+func rep(s string, n int) string {
+        if n <= 0 {
+                return ""
+        }
+        return strings.Repeat(s, n)
 }
 
-// ruler returns a horizontal rule of width w.
-func ruler(char string, w int) string {
-	return fgBrightBlack + repeat(char, w) + reset
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func vlen(s string) int {
+        return utf8.RuneCountInString(ansiRe.ReplaceAllString(s, ""))
 }
 
-// stripAnsi removes ANSI escape sequences to measure visible length.
-var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-
-func visibleLen(s string) int {
-	return utf8.RuneCountInString(ansiEscapeRe.ReplaceAllString(s, ""))
+func padR(s string, n int) string {
+        l := vlen(s)
+        if l >= n {
+                return s
+        }
+        return s + rep(" ", n-l)
 }
 
-// padRight pads s with spaces to reach visible length n.
-func padRight(s string, n int) string {
-	l := visibleLen(s)
-	if l >= n {
-		return s
-	}
-	return s + repeat(" ", n-l)
+func centerStr(s string, w int) string {
+        l := vlen(s)
+        if l >= w {
+                return s
+        }
+        pad := (w - l) / 2
+        return rep(" ", pad) + s
 }
 
-// center centers s in a field of width w.
-func center(s string, w int) string {
-	l := visibleLen(s)
-	if l >= w {
-		return s
-	}
-	pad := (w - l) / 2
-	return repeat(" ", pad) + s + repeat(" ", w-l-pad)
+func minInt(a, b int) int {
+        if a < b {
+                return a
+        }
+        return b
 }
 
-// Inline renderer
+// Word wrapping
+
+// hardBreakWord splits a single word into chunks of ≤ maxW runes.
+func hardBreakWord(w string, maxW int, out *[]string) {
+        runes := []rune(w)
+        for len(runes) > 0 {
+                end := minInt(maxW, len(runes))
+                *out = append(*out, string(runes[:end]))
+                runes = runes[end:]
+        }
+}
+
+// wrapWords wraps text into lines of ≤ maxW visible chars.
+// Words wider than maxW are hard-broken by character.
+func wrapWords(text string, maxW int) []string {
+        if maxW <= 0 {
+                return []string{text}
+        }
+        words := strings.Fields(text)
+        if len(words) == 0 {
+                return []string{""}
+        }
+        var lines []string
+        cur := ""
+        for _, w := range words {
+                wl := vlen(w)
+                switch {
+                case cur == "" && wl > maxW:
+                        hardBreakWord(w, maxW, &lines)
+                case cur == "":
+                        cur = w
+                case vlen(cur)+1+wl <= maxW:
+                        cur += " " + w
+                default:
+                        lines = append(lines, cur)
+                        cur = ""
+                        if wl > maxW {
+                                hardBreakWord(w, maxW, &lines)
+                        } else {
+                                cur = w
+                        }
+                }
+        }
+        if cur != "" {
+                lines = append(lines, cur)
+        }
+        return lines
+}
+
+// Inline markdown renderer
 
 var (
-	reBoldItalic = regexp.MustCompile(`\*{3}(.+?)\*{3}|_{3}(.+?)_{3}`)
-	reBold       = regexp.MustCompile(`\*{2}(.+?)\*{2}|_{2}(.+?)_{2}`)
-	reItalic     = regexp.MustCompile(`\*([^*]+?)\*|_([^_]+?)_`)
-	reStrike     = regexp.MustCompile(`~~(.+?)~~`)
-	reInlineCode = regexp.MustCompile("`([^`]+)`")
-	reLink       = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
-	reImage      = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
-	reAutolink   = regexp.MustCompile(`<(https?://[^>]+)>`)
-	reBareURL    = regexp.MustCompile(`(?:^|[\s(])(https?://\S+)`)
+        reBoldItalic = regexp.MustCompile(`\*{3}(.+?)\*{3}|_{3}(.+?)_{3}`)
+        reBold       = regexp.MustCompile(`\*{2}(.+?)\*{2}|_{2}(.+?)_{2}`)
+        reItalic     = regexp.MustCompile(`\*([^*\n]+?)\*|_([^_\n]+?)_`)
+        reStrike     = regexp.MustCompile(`~~(.+?)~~`)
+        reCode       = regexp.MustCompile("`([^`]+)`")
+        reLink       = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+        reImage      = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
+        reAutolink   = regexp.MustCompile(`<(https?://[^>]+)>`)
 )
 
-// renderInline processes inline markdown within a single line.
 func renderInline(s string) string {
-	// images → label
-	s = reImage.ReplaceAllStringFunc(s, func(m string) string {
-		sub := reImage.FindStringSubmatch(m)
-		alt := sub[1]
-		if alt == "" {
-			alt = "image"
-		}
-		return fgBrightBlack + "[" + alt + "]" + reset
-	})
-
-	// links → text (url)
-	s = reLink.ReplaceAllStringFunc(s, func(m string) string {
-		sub := reLink.FindStringSubmatch(m)
-		return bold + fgBrightBlue + sub[1] + reset + fgBrightBlack + " (" + sub[2] + ")" + reset
-	})
-
-	// autolinks
-	s = reAutolink.ReplaceAllStringFunc(s, func(m string) string {
-		sub := reAutolink.FindStringSubmatch(m)
-		return fgBrightBlue + underline + sub[1] + reset
-	})
-
-	// inline code (do this before bold/italic to avoid re-processing)
-	s = reInlineCode.ReplaceAllStringFunc(s, func(m string) string {
-		sub := reInlineCode.FindStringSubmatch(m)
-		return bgBrightBlack + fgBrightWhite + " " + sub[1] + " " + reset
-	})
-
-	// bold+italic
-	s = reBoldItalic.ReplaceAllStringFunc(s, func(m string) string {
-		sub := reBoldItalic.FindStringSubmatch(m)
-		inner := sub[1]
-		if inner == "" {
-			inner = sub[2]
-		}
-		return bold + italic + inner + reset
-	})
-
-	// bold
-	s = reBold.ReplaceAllStringFunc(s, func(m string) string {
-		sub := reBold.FindStringSubmatch(m)
-		inner := sub[1]
-		if inner == "" {
-			inner = sub[2]
-		}
-		return bold + inner + reset
-	})
-
-	// italic
-	s = reItalic.ReplaceAllStringFunc(s, func(m string) string {
-		sub := reItalic.FindStringSubmatch(m)
-		inner := sub[1]
-		if inner == "" {
-			inner = sub[2]
-		}
-		return italic + inner + reset
-	})
-
-	// strikethrough
-	s = reStrike.ReplaceAllStringFunc(s, func(m string) string {
-		sub := reStrike.FindStringSubmatch(m)
-		return strike + fgBrightBlack + sub[1] + reset
-	})
-
-	return s
+        s = reImage.ReplaceAllStringFunc(s, func(m string) string {
+                sub := reImage.FindStringSubmatch(m)
+                alt := sub[1]
+                if alt == "" {
+                        alt = "image"
+                }
+                return fgBrightBlack + "[" + alt + "]" + reset
+        })
+        s = reLink.ReplaceAllStringFunc(s, func(m string) string {
+                sub := reLink.FindStringSubmatch(m)
+                return bold + fgBrightBlue + sub[1] + reset +
+                        fgBrightBlack + " (" + sub[2] + ")" + reset
+        })
+        s = reAutolink.ReplaceAllStringFunc(s, func(m string) string {
+                sub := reAutolink.FindStringSubmatch(m)
+                return fgBrightBlue + underline + sub[1] + reset
+        })
+        s = reCode.ReplaceAllStringFunc(s, func(m string) string {
+                sub := reCode.FindStringSubmatch(m)
+                return bgBrightBlack + fgBrightWhite + " " + sub[1] + " " + reset
+        })
+        s = reBoldItalic.ReplaceAllStringFunc(s, func(m string) string {
+                sub := reBoldItalic.FindStringSubmatch(m)
+                t := sub[1]
+                if t == "" {
+                        t = sub[2]
+                }
+                return bold + italic + t + reset
+        })
+        s = reBold.ReplaceAllStringFunc(s, func(m string) string {
+                sub := reBold.FindStringSubmatch(m)
+                t := sub[1]
+                if t == "" {
+                        t = sub[2]
+                }
+                return bold + t + reset
+        })
+        s = reItalic.ReplaceAllStringFunc(s, func(m string) string {
+                sub := reItalic.FindStringSubmatch(m)
+                t := sub[1]
+                if t == "" {
+                        t = sub[2]
+                }
+                return italic + t + reset
+        })
+        s = reStrike.ReplaceAllStringFunc(s, func(m string) string {
+                sub := reStrike.FindStringSubmatch(m)
+                return strike + fgBrightBlack + sub[1] + reset
+        })
+        return s
 }
 
-// Block-level parser
+// HTML center-block processing
 
-type lineKind int
-
-const (
-	kindBlank lineKind = iota
-	kindHeading
-	kindHR
-	kindFence
-	kindBlockquote
-	kindListItem
-	kindIndentedCode
-	kindTable
-	kindHTMLComment
-	kindParagraph
+var (
+        reDivCenter    = regexp.MustCompile(`(?i)<div[^>]+align\s*=\s*["']?center["']?[^>]*>`)
+        rePCenter      = regexp.MustCompile(`(?i)<p[^>]+align\s*=\s*["']?center["']?[^>]*>`)
+        rePClose       = regexp.MustCompile(`(?i)</p>`)
+        reDivClose     = regexp.MustCompile(`(?i)</div>`)
+        reHTMLBr       = regexp.MustCompile(`(?i)<br\s*/?>`)
+        reHTMLImgAlt   = regexp.MustCompile(`(?i)<img\b[^>]*\balt\s*=\s*["']([^"']*)["'][^>]*/?>`)
+        reHTMLImgNoAlt = regexp.MustCompile(`(?i)<img\b[^>]*/?>`)
+        reHTMLHref     = regexp.MustCompile(`(?i)<a\b[^>]*>(.*?)</a\s*>`)
+        reHTMLHeading  = regexp.MustCompile(`(?i)<h([1-6])\b[^>]*>(.*?)</h[1-6]>`)
+        reHTMLBold     = regexp.MustCompile(`(?i)<(?:b|strong)\b[^>]*>(.*?)</(?:b|strong)>`)
+        reHTMLEm       = regexp.MustCompile(`(?i)<(?:i|em)\b[^>]*>(.*?)</(?:i|em)>`)
+        reHTMLComment  = regexp.MustCompile(`<!--.*?-->`)
+        reHTMLAnyTag   = regexp.MustCompile(`<[^>]+>`)
+        reHTMLEntity   = regexp.MustCompile(`&(?:[a-zA-Z]+|#[0-9]+);`)
 )
 
-type parsedLine struct {
-	raw   string
-	kind  lineKind
-	level int  // heading level 1-6
-	depth int  // list nesting
-	ord   bool // ordered list
-	index int  // ordered list number
+var htmlEntities = map[string]string{
+        "&amp;":    "&",
+        "&lt;":     "<",
+        "&gt;":     ">",
+        "&quot;":   `"`,
+        "&apos;":   "'",
+        "&nbsp;":   " ",
+        "&mdash;":  "—",
+        "&ndash;":  "–",
+        "&hellip;": "…",
+        "&copy;":   "©",
+        "&reg;":    "®",
+        "&trade;":  "™",
 }
 
-func classifyLine(s string) parsedLine {
-	p := parsedLine{raw: s}
+func decodeEntities(s string) string {
+        return reHTMLEntity.ReplaceAllStringFunc(s, func(e string) string {
+                if v, ok := htmlEntities[e]; ok {
+                        return v
+                }
+                return e
+        })
+}
 
-	// Blank
-	if strings.TrimSpace(s) == "" {
-		p.kind = kindBlank
-		return p
-	}
+// processHTMLLine converts one line of HTML (inside a center block) to text
+// segments. "" in the slice means emit a blank line; nil means skip entirely.
+func processHTMLLine(raw string) []string {
+        line := strings.TrimSpace(raw)
+        if line == "" {
+                return []string{""}
+        }
 
-	// HTML comment
-	if strings.HasPrefix(strings.TrimSpace(s), "<!--") {
-		p.kind = kindHTMLComment
-		return p
-	}
+        line = reHTMLComment.ReplaceAllString(line, "")
 
-	// Fenced code block (``` or ~~~)
-	trimmed := strings.TrimLeft(s, " \t")
-	if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-		p.kind = kindFence
-		return p
-	}
+        hasBR := reHTMLBr.MatchString(line)
+        line = reHTMLBr.ReplaceAllString(line, " ")
 
-	// ATX heading
-	if strings.HasPrefix(trimmed, "#") {
-		level := 0
-		for _, ch := range trimmed {
-			if ch == '#' {
-				level++
-			} else {
-				break
-			}
-		}
-		if level <= 6 && len(trimmed) > level && trimmed[level] == ' ' {
-			p.kind = kindHeading
-			p.level = level
-			p.raw = strings.TrimSpace(trimmed[level+1:])
-			return p
-		}
-	}
+        // ATX markdown heading inside a center block: # Heading, ## Heading, …
+        if strings.HasPrefix(line, "#") {
+                lvl := 0
+                for _, ch := range line {
+                        if ch == '#' {
+                                lvl++
+                        } else {
+                                break
+                        }
+                }
+                if lvl <= 6 && len(line) > lvl && line[lvl] == ' ' {
+                        text := strings.TrimSpace(line[lvl+1:])
+                        if text == "" {
+                                return nil
+                        }
+                        var style string
+                        switch lvl {
+                        case 1:
+                                style = bold + fgBrightMagenta
+                        case 2:
+                                style = bold + fgBrightCyan
+                        case 3:
+                                style = bold + fgBrightYellow
+                        default:
+                                style = bold + fgBrightWhite
+                        }
+                        return []string{style + text + reset}
+                }
+        }
 
-	// Setext heading (=== or ---)
-	allEq := regexp.MustCompile(`^=+\s*$`)
-	allDash := regexp.MustCompile(`^-+\s*$`)
-	if allEq.MatchString(trimmed) {
-		p.kind = kindHeading
-		p.level = 1
-		return p
-	}
-	if allDash.MatchString(trimmed) && len(trimmed) >= 3 {
-		p.kind = kindHR
-		return p
-	}
+        // <h1>…</h6> — styled heading text
+        if m := reHTMLHeading.FindStringSubmatch(line); m != nil {
+                inner := reHTMLAnyTag.ReplaceAllString(m[2], "")
+                inner = decodeEntities(strings.TrimSpace(inner))
+                if inner == "" {
+                        return nil
+                }
+                var style string
+                switch m[1] {
+                case "1":
+                        style = bold + fgBrightMagenta
+                case "2":
+                        style = bold + fgBrightCyan
+                case "3":
+                        style = bold + fgBrightYellow
+                default:
+                        style = bold + fgBrightWhite
+                }
+                return []string{style + inner + reset}
+        }
 
-	// Thematic break (--- *** ___)
-	hrRe := regexp.MustCompile(`^(\*{3,}|-{3,}|_{3,})\s*$`)
-	if hrRe.MatchString(trimmed) {
-		p.kind = kindHR
-		return p
-	}
+        // <img alt="…"> - [alt], <img> without alt - omit
+        line = reHTMLImgAlt.ReplaceAllStringFunc(line, func(m string) string {
+                sub := reHTMLImgAlt.FindStringSubmatch(m)
+                alt := strings.TrimSpace(sub[1])
+                if alt != "" {
+                        return fgBrightBlack + "[" + alt + "]" + reset
+                }
+                return ""
+        })
+        line = reHTMLImgNoAlt.ReplaceAllString(line, "")
 
-	// Blockquote
-	if strings.HasPrefix(trimmed, "> ") || trimmed == ">" {
-		p.kind = kindBlockquote
-		if len(trimmed) > 2 {
-			p.raw = trimmed[2:]
-		} else {
-			p.raw = ""
-		}
-		return p
-	}
+        // <a href="…">content</a> - coloured link text
+        line = reHTMLHref.ReplaceAllStringFunc(line, func(m string) string {
+                sub := reHTMLHref.FindStringSubmatch(m)
+                inner := strings.TrimSpace(reHTMLAnyTag.ReplaceAllString(sub[1], ""))
+                if inner == "" {
+                        return ""
+                }
+                return bold + fgBrightBlue + inner + reset
+        })
 
-	// Ordered list
-	ordRe := regexp.MustCompile(`^(\s*)(\d+)\.\s+(.*)`)
-	if m := ordRe.FindStringSubmatch(s); m != nil {
-		p.kind = kindListItem
-		p.ord = true
-		p.depth = len(m[1]) / 2
-		fmt.Sscanf(m[2], "%d", &p.index)
-		p.raw = m[3]
-		return p
-	}
+        // <b>/<strong> and <i>/<em>
+        line = reHTMLBold.ReplaceAllStringFunc(line, func(m string) string {
+                sub := reHTMLBold.FindStringSubmatch(m)
+                return bold + sub[1] + reset
+        })
+        line = reHTMLEm.ReplaceAllStringFunc(line, func(m string) string {
+                sub := reHTMLEm.FindStringSubmatch(m)
+                return italic + sub[1] + reset
+        })
 
-	// Unordered list
-	ulRe := regexp.MustCompile(`^(\s*)[-*+]\s+(.*)`)
-	if m := ulRe.FindStringSubmatch(s); m != nil {
-		p.kind = kindListItem
-		p.depth = len(m[1]) / 2
-		p.raw = m[2]
-		return p
-	}
+        // Strip remaining tags
+        line = reHTMLAnyTag.ReplaceAllString(line, "")
+        line = decodeEntities(strings.TrimSpace(line))
 
-	// Indented code (4 spaces or tab)
-	if strings.HasPrefix(s, "    ") || strings.HasPrefix(s, "\t") {
-		p.kind = kindIndentedCode
-		if strings.HasPrefix(s, "\t") {
-			p.raw = s[1:]
-		} else {
-			p.raw = s[4:]
-		}
-		return p
-	}
-
-	// Table row (contains |)
-	if strings.Contains(trimmed, "|") {
-		p.kind = kindTable
-		return p
-	}
-
-	p.kind = kindParagraph
-	return p
+        if line == "" && !hasBR {
+                return nil
+        }
+        var out []string
+        if line != "" {
+                out = append(out, line)
+        }
+        if hasBR {
+                out = append(out, "")
+        }
+        return out
 }
 
 // Renderer
 
 type renderer struct {
-	w     int
-	lines []string
-	out   *strings.Builder
+        w   int
+        out strings.Builder
 }
 
-func newRenderer() *renderer {
-	return &renderer{
-		w:   termWidth(),
-		out: &strings.Builder{},
-	}
+func newRenderer(w int) *renderer { return &renderer{w: w} }
+
+func (r *renderer) nl()          { r.out.WriteByte('\n') }
+func (r *renderer) line(s string) { r.out.WriteString(s); r.out.WriteByte('\n') }
+
+func (r *renderer) heading(level int, text string) {
+        t := renderInline(text)
+        r.nl()
+        switch level {
+        case 1:
+                r.line(bold + fgBrightMagenta + "██" + reset + " " + bold + fgBrightWhite + strings.ToUpper(t) + reset)
+                r.line(fgBrightMagenta + rep("─", r.w) + reset)
+        case 2:
+                r.line(bold + fgBrightCyan + "## " + t + reset)
+                r.line(fgCyan + rep("─", r.w/2) + reset)
+        case 3:
+                r.line(bold + fgBrightYellow + "### " + t + reset)
+        case 4:
+                r.line(bold + fgYellow + "#### " + t + reset)
+        case 5:
+                r.line(bold + fgBrightBlack + "##### " + t + reset)
+        default:
+                r.line(bold + fgBrightBlack + "###### " + t + reset)
+        }
 }
 
-func newRendererWidth(w int) *renderer {
-	return &renderer{
-		w:   w,
-		out: &strings.Builder{},
-	}
+
+func (r *renderer) hr() {
+        r.nl()
+        r.line(fgBrightBlack + rep("─", r.w) + reset)
+        r.nl()
 }
 
-func (r *renderer) emit(s string) {
-	r.out.WriteString(s)
-	r.out.WriteByte('\n')
+func (r *renderer) codeBlock(lang string, lines []string) {
+        r.nl()
+        hdr := bgBrightBlack + fgBrightWhite + bold
+        if lang != "" {
+                hdr += "  " + strings.ToUpper(lang) + "  "
+        } else {
+                hdr += "  CODE  "
+        }
+        hdr += reset
+        r.line(hdr)
+        bar := fgBrightBlack + "│" + reset
+        for _, l := range lines {
+                r.line(bar + " " + fgBrightGreen + l + reset)
+        }
+        r.line(fgBrightBlack + rep("─", r.w) + reset)
+        r.nl()
 }
 
-func (r *renderer) blank() {
-	r.out.WriteByte('\n')
+func (r *renderer) blockquote(lines []string) {
+        r.nl()
+        for _, l := range lines {
+                r.line(fgBrightBlack + "▌ " + reset + italic + fgBrightWhite + renderInline(l) + reset)
+        }
+        r.nl()
 }
 
-func (r *renderer) renderHeading(level int, text string) {
-	rendered := renderInline(text)
-	switch level {
-	case 1:
-		r.blank()
-		inner := bold + fgBrightWhite + " " + strings.ToUpper(rendered) + " " + reset
-		line := fgBrightMagenta + repeat("█", 2) + reset + " " + inner
-		r.emit(line)
-		r.emit(fgBrightMagenta + repeat("─", r.w) + reset)
-	case 2:
-		r.blank()
-		line := bold + fgBrightCyan + "## " + rendered + reset
-		r.emit(line)
-		r.emit(fgCyan + repeat("─", r.w/2) + reset)
-	case 3:
-		r.blank()
-		r.emit(bold + fgBrightYellow + "### " + rendered + reset)
-	case 4:
-		r.blank()
-		r.emit(bold + fgYellow + "#### " + rendered + reset)
-	case 5:
-		r.blank()
-		r.emit(bold + fgBrightBlack + "##### " + rendered + reset)
-	default:
-		r.blank()
-		r.emit(bold + fgBrightBlack + "###### " + rendered + reset)
-	}
+func (r *renderer) listItem(depth int, ord bool, idx int, text string) {
+        indent := rep("  ", depth)
+        var bullet string
+        if ord {
+                if depth == 0 {
+                        bullet = fgBrightMagenta + fmt.Sprintf("%d.", idx) + reset
+                } else {
+                        bullet = fgBrightBlack + fmt.Sprintf("%d.", idx) + reset
+                }
+        } else {
+                if depth == 0 {
+                        bullet = fgBrightMagenta + "•" + reset
+                } else {
+                        bullet = fgBrightBlack + "◦" + reset
+                }
+        }
+        r.line(indent + bullet + " " + renderInline(text))
 }
 
-func (r *renderer) renderHR() {
-	r.blank()
-	r.emit(fgBrightBlack + repeat("─", r.w) + reset)
-	r.blank()
+func (r *renderer) paragraph(lines []string) {
+        text := renderInline(strings.Join(lines, " "))
+        cur := ""
+        for _, w := range strings.Fields(text) {
+                if cur == "" {
+                        cur = w
+                } else if vlen(cur)+1+vlen(w) <= r.w {
+                        cur += " " + w
+                } else {
+                        r.line(cur)
+                        cur = w
+                }
+        }
+        if cur != "" {
+                r.line(cur)
+        }
+        r.nl()
 }
 
-func (r *renderer) renderCodeBlock(lang string, lines []string) {
-	r.blank()
-	header := bgBrightBlack + fgBrightWhite + bold
-	if lang != "" {
-		header += "  " + strings.ToUpper(lang) + "  "
-	} else {
-		header += "  CODE  "
-	}
-	header += reset
-	r.emit(header)
-	bar := fgBrightBlack + "│" + reset
-	for _, l := range lines {
-		r.emit(bar + " " + fgBrightGreen + l + reset)
-	}
-	r.emit(fgBrightBlack + repeat("─", r.w) + reset)
-	r.blank()
+// Table rendering
+
+// shrinkCols reduces column widths proportionally until the table fits in limit.
+// Table wire width = 1 + Σ(colW + 3)  (leading │, then space+content+space+│ per col)
+func shrinkCols(widths []int, limit int) []int {
+        n := len(widths)
+        if n == 0 {
+                return widths
+        }
+        out := make([]int, n)
+        copy(out, widths)
+
+        const minW = 4
+
+        tableW := func() int {
+                s := 1
+                for _, w := range out {
+                        s += w + 3
+                }
+                return s
+        }
+
+        if tableW() <= limit {
+                return out
+        }
+
+        // Total content budget
+        budget := limit - 1 - n*3
+        if budget < n*minW {
+                budget = n * minW
+        }
+
+        total := 0
+        for _, w := range out {
+                total += w
+        }
+        if total == 0 {
+                return out
+        }
+
+        // Proportional distribution
+        remaining := budget
+        for i := range out {
+                share := out[i] * budget / total
+                if share < minW {
+                        share = minW
+                }
+                out[i] = share
+                remaining -= share
+        }
+        // Give remainder left-to-right
+        for i := range out {
+                if remaining <= 0 {
+                        break
+                }
+                out[i]++
+                remaining--
+        }
+        // Safety trim (rounding overshoot)
+        for tableW() > limit {
+                best := -1
+                for i, w := range out {
+                        if w > minW && (best == -1 || w > out[best]) {
+                                best = i
+                        }
+                }
+                if best == -1 {
+                        break
+                }
+                out[best]--
+        }
+        return out
 }
 
-func (r *renderer) renderBlockquote(lines []string) {
-	r.blank()
-	for _, l := range lines {
-		r.emit(fgBrightBlack + "▌ " + reset + italic + fgBrightWhite + renderInline(l) + reset)
-	}
-	r.blank()
+func (r *renderer) table(rows []string) {
+        if len(rows) == 0 {
+                return
+        }
+
+        parseCells := func(row string) []string {
+                row = strings.Trim(row, "| \t")
+                parts := strings.Split(row, "|")
+                out := make([]string, len(parts))
+                for i, p := range parts {
+                        out[i] = strings.TrimSpace(p)
+                }
+                return out
+        }
+
+        sepRe := regexp.MustCompile(`^[\s|:\-]+$`)
+        hasSep := len(rows) >= 2 && sepRe.MatchString(rows[1])
+
+        var allRows [][]string
+        for i, row := range rows {
+                if hasSep && i == 1 {
+                        continue
+                }
+                allRows = append(allRows, parseCells(row))
+        }
+        if len(allRows) == 0 {
+                return
+        }
+
+        // Natural column widths
+        numCols := 0
+        for _, row := range allRows {
+                if len(row) > numCols {
+                        numCols = len(row)
+                }
+        }
+        colW := make([]int, numCols)
+        for _, row := range allRows {
+                for ci, cell := range row {
+                        if ci < numCols && len(cell) > colW[ci] {
+                                colW[ci] = len(cell)
+                        }
+                }
+        }
+
+        // Shrink to fit terminal
+        colW = shrinkCols(colW, r.w)
+
+        hline := func(l, m, ri, fill string) string {
+                parts := make([]string, numCols)
+                for i, w := range colW {
+                        parts[i] = rep(fill, w+2)
+                }
+                return fgBrightBlack + l + strings.Join(parts, m) + ri + reset
+        }
+
+        r.nl()
+        r.line(hline("┌", "┬", "┐", "─"))
+
+        for ri, row := range allRows {
+                // Wrap each cell to its column width
+                wrapped := make([][]string, numCols)
+                maxL := 1
+                for ci := 0; ci < numCols; ci++ {
+                        raw := ""
+                        if ci < len(row) {
+                                raw = row[ci]
+                        }
+                        // Wrap on plain text so inline ANSI spans (e.g. `code`) are
+                        // never split by strings.Fields. Apply renderInline afterwards.
+                        wlines := wrapWords(raw, colW[ci])
+                        for j, l := range wlines {
+                                wlines[j] = renderInline(l)
+                        }
+                        wrapped[ci] = wlines
+                        if len(wlines) > maxL {
+                                maxL = len(wlines)
+                        }
+                }
+
+                for li := 0; li < maxL; li++ {
+                        out := fgBrightBlack + "│" + reset
+                        for ci := 0; ci < numCols; ci++ {
+                                cell := ""
+                                if li < len(wrapped[ci]) {
+                                        cell = wrapped[ci][li]
+                                }
+                                if ri == 0 {
+                                        // Header row: strip existing ANSI then apply bold+white
+                                        cell = bold + fgBrightWhite + ansiRe.ReplaceAllString(cell, "") + reset
+                                }
+                                out += " " + padR(cell, colW[ci]) + " " + fgBrightBlack + "│" + reset
+                        }
+                        r.line(out)
+                }
+
+                if ri == 0 {
+                        r.line(hline("├", "┼", "┤", "─"))
+                }
+        }
+
+        r.line(hline("└", "┴", "┘", "─"))
+        r.nl()
 }
 
-func (r *renderer) renderListItem(depth int, ord bool, index int, text string) {
-	indent := repeat("  ", depth)
-	bullet := fgBrightMagenta + "•" + reset
-	if ord {
-		bullet = fgBrightMagenta + fmt.Sprintf("%d.", index) + reset
-	}
-	if depth > 0 {
-		bullet = fgBrightBlack + "◦" + reset
-		if ord {
-			bullet = fgBrightBlack + fmt.Sprintf("%d.", index) + reset
-		}
-	}
-	r.emit(indent + bullet + " " + renderInline(text))
+// centerBlock emits a slice of raw HTML lines centered in the terminal.
+func (r *renderer) centerBlock(lines []string) {
+        r.nl()
+        for _, raw := range lines {
+                segs := processHTMLLine(raw)
+                for _, seg := range segs {
+                        if seg == "" {
+                                r.nl()
+                        } else {
+                                seg = renderInline(seg)
+                                r.line(centerStr(seg, r.w))
+                        }
+                }
+        }
+        r.nl()
 }
 
-// wrapWords splits text into lines of at most maxW visible characters,
-// breaking on word boundaries. Each element has no trailing space.
-func wrapWords(text string, maxW int) []string {
-	if maxW <= 0 {
-		return []string{text}
-	}
-	words := strings.Fields(text)
-	if len(words) == 0 {
-		return []string{""}
-	}
-	var lines []string
-	cur := ""
-	for _, w := range words {
-		wl := visibleLen(w)
-		if cur == "" {
-			// Single word wider than the column: hard-break it.
-			if wl > maxW {
-				runes := []rune(w)
-				for len(runes) > 0 {
-					chunk := string(runes[:min(maxW, len(runes))])
-					lines = append(lines, chunk)
-					runes = runes[min(maxW, len(runes)):]
-				}
-				cur = ""
-			} else {
-				cur = w
-			}
-		} else if visibleLen(cur)+1+wl <= maxW {
-			cur += " " + w
-		} else {
-			lines = append(lines, cur)
-			cur = w
-		}
-	}
-	if cur != "" {
-		lines = append(lines, cur)
-	}
-	return lines
+// Line classifier
+
+type lineKind int
+
+const (
+        kindBlank lineKind = iota
+        kindHeading
+        kindHR
+        kindFence
+        kindBlockquote
+        kindListItem
+        kindIndentedCode
+        kindTable
+        kindHTMLComment
+        kindParagraph
+)
+
+type parsed struct {
+        kind  lineKind
+        raw   string
+        level int
+        depth int
+        ord   bool
+        index int
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
+func classify(s string) parsed {
+        p := parsed{raw: s}
 
-// shrinkColWidths reduces column widths so the total table render width fits
-// within limit. Uses a proportional reduction pass, then fixes any min-col
-// violations, avoiding the O(excess) single-decrement loop.
-//
-// Table wire width = 1 + numCols*(minColW+2+1) at minimum,
-// where each column costs: leading-space + content + trailing-space + │.
-func shrinkColWidths(widths []int, limit int) []int {
-	n := len(widths)
-	if n == 0 {
-		return widths
-	}
+        trimmed := strings.TrimSpace(s)
 
-	out := make([]int, n)
-	copy(out, widths)
+        if trimmed == "" {
+                p.kind = kindBlank
+                return p
+        }
+        if strings.HasPrefix(trimmed, "<!--") {
+                p.kind = kindHTMLComment
+                return p
+        }
+        if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+                p.kind = kindFence
+                return p
+        }
 
-	const minColW = 4 // minimum visible content width per column
+        // ATX heading
+        if strings.HasPrefix(trimmed, "#") {
+                lvl := 0
+                for _, ch := range trimmed {
+                        if ch == '#' {
+                                lvl++
+                        } else {
+                                break
+                        }
+                }
+                if lvl <= 6 && len(trimmed) > lvl && trimmed[lvl] == ' ' {
+                        p.kind = kindHeading
+                        p.level = lvl
+                        p.raw = strings.TrimSpace(trimmed[lvl+1:])
+                        return p
+                }
+        }
 
-	tableWidth := func() int {
-		total := 1
-		for _, w := range out {
-			total += w + 3 // space + content + space + │
-		}
-		return total
-	}
+        // Thematic break (--- *** ___)
+        hrRe := regexp.MustCompile(`^(\*{3,}|-{3,}|_{3,})\s*$`)
+        if hrRe.MatchString(trimmed) {
+                p.kind = kindHR
+                return p
+        }
 
-	// Fast path: already fits.
-	if tableWidth() <= limit {
-		return out
-	}
+        // Blockquote
+        if strings.HasPrefix(trimmed, "> ") || trimmed == ">" {
+                p.kind = kindBlockquote
+                if len(trimmed) > 2 {
+                        p.raw = trimmed[2:]
+                }
+                return p
+        }
 
-	// Available content budget across all columns.
-	// Wire overhead = 1 (leading │) + numCols * 3 (space+space+│ per col).
-	budget := limit - 1 - n*3
-	if budget < n*minColW {
-		budget = n * minColW // clamp: can't do better than all-minimum columns
-	}
+        // Ordered list
+        ordRe := regexp.MustCompile(`^(\s*)(\d+)\.\s+(.*)`)
+        if m := ordRe.FindStringSubmatch(s); m != nil {
+                p.kind = kindListItem
+                p.ord = true
+                p.depth = len(m[1]) / 2
+                fmt.Sscanf(m[2], "%d", &p.index)
+                p.raw = m[3]
+                return p
+        }
 
-	// Sum of natural widths.
-	total := 0
-	for _, w := range out {
-		total += w
-	}
+        // Unordered list
+        ulRe := regexp.MustCompile(`^(\s*)[-*+]\s+(.*)`)
+        if m := ulRe.FindStringSubmatch(s); m != nil {
+                p.kind = kindListItem
+                p.depth = len(m[1]) / 2
+                p.raw = m[2]
+                return p
+        }
 
-	if total == 0 {
-		return out
-	}
+        // Indented code (4 spaces or tab)
+        if strings.HasPrefix(s, "    ") || strings.HasPrefix(s, "\t") {
+                p.kind = kindIndentedCode
+                if strings.HasPrefix(s, "\t") {
+                        p.raw = s[1:]
+                } else {
+                        p.raw = s[4:]
+                }
+                return p
+        }
 
-	// Distribute budget proportionally, then enforce the minimum.
-	remaining := budget
-	for i := range out {
-		share := out[i] * budget / total
-		if share < minColW {
-			share = minColW
-		}
-		out[i] = share
-		remaining -= share
-	}
+        // Table
+        if strings.Contains(trimmed, "|") {
+                p.kind = kindTable
+                return p
+        }
 
-	// Give leftover pixels to columns from left to right.
-	for i := range out {
-		if remaining <= 0 {
-			break
-		}
-		out[i]++
-		remaining--
-	}
-
-	// Final safety: ensure the table actually fits (rounding may overshoot by 1-2).
-	for tableWidth() > limit {
-		best := -1
-		for i, w := range out {
-			if w > minColW && (best == -1 || w > out[best]) {
-				best = i
-			}
-		}
-		if best == -1 {
-			break
-		}
-		out[best]--
-	}
-
-	return out
-}
-
-func (r *renderer) renderTable(rows []string) {
-	if len(rows) < 2 {
-		for _, row := range rows {
-			r.emit(renderInline(row))
-		}
-		return
-	}
-
-	// Parse cells
-	parseCells := func(row string) []string {
-		row = strings.Trim(row, "| \t")
-		parts := strings.Split(row, "|")
-		cells := make([]string, len(parts))
-		for i, p := range parts {
-			cells[i] = strings.TrimSpace(p)
-		}
-		return cells
-	}
-
-	// Check if row 1 is a separator
-	sepRe := regexp.MustCompile(`^[\s|:\-]+$`)
-	hasSep := len(rows) >= 2 && sepRe.MatchString(rows[1])
-
-	allRows := [][]string{}
-	for i, row := range rows {
-		if hasSep && i == 1 {
-			continue
-		}
-		allRows = append(allRows, parseCells(row))
-	}
-
-	if len(allRows) == 0 {
-		return
-	}
-
-	// Compute natural column widths from content.
-	numCols := 0
-	for _, row := range allRows {
-		if len(row) > numCols {
-			numCols = len(row)
-		}
-	}
-	colWidths := make([]int, numCols)
-	for _, row := range allRows {
-		for i, cell := range row {
-			if i < numCols && len(cell) > colWidths[i] {
-				colWidths[i] = len(cell)
-			}
-		}
-	}
-
-	// Shrink columns if the table is wider than the terminal.
-	colWidths = shrinkColWidths(colWidths, r.w)
-
-	hline := func(left, mid, right, fill string) string {
-		parts := make([]string, numCols)
-		for i, w := range colWidths {
-			parts[i] = repeat(fill, w+2)
-		}
-		return fgBrightBlack + left + strings.Join(parts, mid) + right + reset
-	}
-
-	r.blank()
-	r.emit(hline("┌", "┬", "┐", "─"))
-
-	for ri, row := range allRows {
-		// Word-wrap every cell independently, collecting the max line count.
-		wrapped := make([][]string, numCols)
-		maxLines := 1
-		for ci := 0; ci < numCols; ci++ {
-			raw := ""
-			if ci < len(row) {
-				raw = row[ci]
-			}
-			// Apply inline markup (header row gets bold styling later).
-			plain := renderInline(raw)
-			lines := wrapWords(plain, colWidths[ci])
-			wrapped[ci] = lines
-			if len(lines) > maxLines {
-				maxLines = len(lines)
-			}
-		}
-
-		// Render each sub-line of this row.
-		for li := 0; li < maxLines; li++ {
-			line := fgBrightBlack + "│" + reset
-			for ci := 0; ci < numCols; ci++ {
-				cellLine := ""
-				if li < len(wrapped[ci]) {
-					cellLine = wrapped[ci][li]
-				}
-				if ri == 0 {
-					// Header: bold + bright white on every line segment.
-					cellLine = bold + fgBrightWhite + ansiEscapeRe.ReplaceAllString(cellLine, "") + reset
-				}
-				line += " " + padRight(cellLine, colWidths[ci]) + " " + fgBrightBlack + "│" + reset
-			}
-			r.emit(line)
-		}
-
-		if ri == 0 {
-			r.emit(hline("├", "┼", "┤", "─"))
-		}
-	}
-
-	r.emit(hline("└", "┴", "┘", "─"))
-	r.blank()
-}
-
-func (r *renderer) renderParagraph(lines []string) {
-	text := strings.Join(lines, " ")
-	text = renderInline(text)
-	// simple word-wrap
-	words := strings.Fields(text)
-	line := ""
-	for _, w := range words {
-		if visibleLen(line)+visibleLen(w)+1 > r.w && line != "" {
-			r.emit(line)
-			line = w
-		} else {
-			if line == "" {
-				line = w
-			} else {
-				line += " " + w
-			}
-		}
-	}
-	if line != "" {
-		r.emit(line)
-	}
+        p.kind = kindParagraph
+        return p
 }
 
 // Main parse loop
 
 func render(src string, w int) string {
-	r := newRendererWidth(w)
-	scanner := bufio.NewScanner(strings.NewReader(src))
-	rawLines := []string{}
-	for scanner.Scan() {
-		rawLines = append(rawLines, scanner.Text())
-	}
+        r := newRenderer(w)
 
-	inFence := false
-	fenceLang := ""
-	fenceLines := []string{}
+        rawLines := strings.Split(src, "\n")
+        // Trim trailing empty line that Split adds for a trailing newline
+        if len(rawLines) > 0 && rawLines[len(rawLines)-1] == "" {
+                rawLines = rawLines[:len(rawLines)-1]
+        }
 
-	inBlockquote := false
-	bqLines := []string{}
+        // Block state
+        inFence := false
+        fenceLang := ""
+        var fenceLines []string
 
-	paraLines := []string{}
+        inBQ := false
+        var bqLines []string
 
-	inTable := false
-	tableRows := []string{}
+        var paraLines []string
 
-	flushParagraph := func() {
-		if len(paraLines) > 0 {
-			r.renderParagraph(paraLines)
-			r.blank()
-			paraLines = nil
-		}
-	}
+        inTable := false
+        var tableRows []string
 
-	flushBlockquote := func() {
-		if len(bqLines) > 0 {
-			r.renderBlockquote(bqLines)
-			bqLines = nil
-		}
-		inBlockquote = false
-	}
+        inCenter := false
+        divDepth := 0
+        var centerLines []string
 
-	flushTable := func() {
-		if len(tableRows) > 0 {
-			r.renderTable(tableRows)
-			tableRows = nil
-		}
-		inTable = false
-	}
+        flush := func() {
+                if len(paraLines) > 0 {
+                        r.paragraph(paraLines)
+                        paraLines = nil
+                }
+                if len(bqLines) > 0 {
+                        r.blockquote(bqLines)
+                        bqLines = nil
+                        inBQ = false
+                }
+                if len(tableRows) > 0 {
+                        r.table(tableRows)
+                        tableRows = nil
+                        inTable = false
+                }
+        }
 
-	prevSetextCandidate := ""
+        for i, raw := range rawLines {
+                trimmed := strings.TrimSpace(raw)
 
-	for i, raw := range rawLines {
-		// Handle setext-style headings: check next line
-		if !inFence && i+1 < len(rawLines) {
-			next := strings.TrimSpace(rawLines[i+1])
-			allEq := regexp.MustCompile(`^=+$`)
-			allDash2 := regexp.MustCompile(`^-{2,}$`)
-			if allEq.MatchString(next) && strings.TrimSpace(raw) != "" {
-				prevSetextCandidate = strings.TrimSpace(raw)
-				_ = prevSetextCandidate
-				flushParagraph()
-				flushBlockquote()
-				flushTable()
-				r.renderHeading(1, strings.TrimSpace(raw))
-				continue
-			}
-			if allDash2.MatchString(next) && strings.TrimSpace(raw) != "" && !strings.HasPrefix(strings.TrimSpace(raw), "#") {
-				flushParagraph()
-				flushBlockquote()
-				flushTable()
-				r.renderHeading(2, strings.TrimSpace(raw))
-				continue
-			}
-		}
-		// Skip the setext underline line itself
-		allEqRe := regexp.MustCompile(`^=+\s*$`)
-		allDashRe := regexp.MustCompile(`^-{2,}\s*$`)
-		if !inFence && i > 0 {
-			prev := strings.TrimSpace(rawLines[i-1])
-			cur := strings.TrimSpace(raw)
-			if (allEqRe.MatchString(cur) || allDashRe.MatchString(cur)) && prev != "" && !strings.HasPrefix(prev, "#") {
-				continue
-			}
-		}
+                // Center-block: <div align="center">
+                if !inFence {
+                        // Strip backtick spans before tag-matching so `<div align="center">`
+                        // inside table cells or code spans does not open a center block.
+                        htmlStripped := reCode.ReplaceAllString(trimmed, "")
+                        if reDivCenter.MatchString(htmlStripped) || rePCenter.MatchString(htmlStripped) {
+                                flush()
+                                if inCenter {
+                                        divDepth++
+                                        centerLines = append(centerLines, raw)
+                                } else {
+                                        inCenter = true
+                                        divDepth = 1
+                                }
+                                continue
+                        }
+                        if inCenter {
+                                isClose := reDivClose.MatchString(trimmed) || rePClose.MatchString(trimmed)
+                                if isClose {
+                                        divDepth--
+                                        if divDepth <= 0 {
+                                                r.centerBlock(centerLines)
+                                                centerLines = nil
+                                                inCenter = false
+                                        } else {
+                                                centerLines = append(centerLines, raw)
+                                        }
+                                } else {
+                                        centerLines = append(centerLines, raw)
+                                }
+                                continue
+                        }
+                }
 
-		// Inside a fenced code block
-		if inFence {
-			trimmed := strings.TrimLeft(raw, " \t")
-			if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-				r.renderCodeBlock(fenceLang, fenceLines)
-				fenceLines = nil
-				fenceLang = ""
-				inFence = false
-			} else {
-				fenceLines = append(fenceLines, raw)
-			}
-			continue
-		}
+                // Setext headings: look one line ahead
+                if !inFence && i+1 < len(rawLines) && trimmed != "" {
+                        next := strings.TrimSpace(rawLines[i+1])
+                        allEq := regexp.MustCompile(`^=+$`)
+                        allDash := regexp.MustCompile(`^-{2,}$`)
+                        if allEq.MatchString(next) {
+                                flush()
+                                r.heading(1, trimmed)
+                                continue
+                        }
+                        if allDash.MatchString(next) && !strings.HasPrefix(trimmed, "#") {
+                                flush()
+                                r.heading(2, trimmed)
+                                continue
+                        }
+                }
+                // Skip setext underline itself
+                if !inFence && i > 0 {
+                        prev := strings.TrimSpace(rawLines[i-1])
+                        allEqRe := regexp.MustCompile(`^=+\s*$`)
+                        allDashRe := regexp.MustCompile(`^-{2,}\s*$`)
+                        if (allEqRe.MatchString(trimmed) || allDashRe.MatchString(trimmed)) &&
+                                prev != "" && !strings.HasPrefix(prev, "#") {
+                                continue
+                        }
+                }
 
-		p := classifyLine(raw)
+                // Fenced code block
+                if inFence {
+                        t2 := strings.TrimLeft(raw, " \t")
+                        if strings.HasPrefix(t2, "```") || strings.HasPrefix(t2, "~~~") {
+                                r.codeBlock(fenceLang, fenceLines)
+                                fenceLines = nil
+                                fenceLang = ""
+                                inFence = false
+                        } else {
+                                fenceLines = append(fenceLines, raw)
+                        }
+                        continue
+                }
 
-		switch p.kind {
-		case kindFence:
-			flushParagraph()
-			flushBlockquote()
-			flushTable()
-			inFence = true
-			trimmed := strings.TrimLeft(raw, " \t~`")
-			fenceLang = strings.TrimSpace(trimmed)
+                p := classify(raw)
 
-		case kindBlank:
-			flushParagraph()
-			flushBlockquote()
-			flushTable()
-			r.blank()
+                switch p.kind {
+                case kindFence:
+                        flush()
+                        inFence = true
+                        fenceLang = strings.TrimSpace(strings.TrimLeft(raw, " \t~`"))
 
-		case kindHTMLComment:
-			// skip
+                case kindBlank:
+                        flush()
+                        r.nl()
 
-		case kindHeading:
-			flushParagraph()
-			flushBlockquote()
-			flushTable()
-			r.renderHeading(p.level, p.raw)
+                case kindHTMLComment:
+                        // skip
 
-		case kindHR:
-			flushParagraph()
-			flushBlockquote()
-			flushTable()
-			r.renderHR()
+                case kindHeading:
+                        flush()
+                        r.heading(p.level, p.raw)
 
-		case kindBlockquote:
-			flushParagraph()
-			flushTable()
-			inBlockquote = true
-			bqLines = append(bqLines, p.raw)
+                case kindHR:
+                        flush()
+                        r.hr()
 
-		case kindListItem:
-			flushParagraph()
-			flushBlockquote()
-			flushTable()
-			r.renderListItem(p.depth, p.ord, p.index, p.raw)
+                case kindBlockquote:
+                        if len(paraLines) > 0 {
+                                r.paragraph(paraLines)
+                                paraLines = nil
+                        }
+                        if len(tableRows) > 0 {
+                                r.table(tableRows)
+                                tableRows = nil
+                                inTable = false
+                        }
+                        inBQ = true
+                        bqLines = append(bqLines, p.raw)
 
-		case kindTable:
-			flushParagraph()
-			flushBlockquote()
-			inTable = true
-			tableRows = append(tableRows, raw)
+                case kindListItem:
+                        flush()
+                        r.listItem(p.depth, p.ord, p.index, p.raw)
 
-		case kindIndentedCode:
-			flushParagraph()
-			flushBlockquote()
-			flushTable()
-			r.renderCodeBlock("", []string{p.raw})
+                case kindTable:
+                        if len(paraLines) > 0 {
+                                r.paragraph(paraLines)
+                                paraLines = nil
+                        }
+                        if inBQ {
+                                r.blockquote(bqLines)
+                                bqLines = nil
+                                inBQ = false
+                        }
+                        inTable = true
+                        tableRows = append(tableRows, raw)
 
-		case kindParagraph:
-			if inBlockquote {
-				flushBlockquote()
-			}
-			if inTable {
-				flushTable()
-			}
-			paraLines = append(paraLines, strings.TrimSpace(raw))
-		}
-	}
+                case kindIndentedCode:
+                        flush()
+                        r.codeBlock("", []string{p.raw})
 
-	// Flush any remaining blocks
-	flushParagraph()
-	flushBlockquote()
-	flushTable()
-	if inFence && len(fenceLines) > 0 {
-		r.renderCodeBlock(fenceLang, fenceLines)
-	}
+                case kindParagraph:
+                        if inBQ {
+                                r.blockquote(bqLines)
+                                bqLines = nil
+                                inBQ = false
+                        }
+                        if inTable {
+                                r.table(tableRows)
+                                tableRows = nil
+                                inTable = false
+                        }
+                        paraLines = append(paraLines, trimmed)
+                }
+        }
 
-	return r.out.String()
+        // Flush any remaining open blocks
+        flush()
+        if inFence && len(fenceLines) > 0 {
+                r.codeBlock(fenceLang, fenceLines)
+        }
+        if inCenter && len(centerLines) > 0 {
+                r.centerBlock(centerLines)
+        }
+
+        return r.out.String()
 }
 
-// Entry point
+// CLI
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `%smdview%s — render Markdown in your terminal
+        fmt.Fprintf(os.Stderr, `%smdview%s — render Markdown in your terminal
 
 %sUSAGE%s
   mdview [--width N] <file.md>
@@ -891,7 +1008,7 @@ func usage() {
 
 %sFLAGS%s
   -w, --width N   Override render width (default: auto-detect from terminal)
-  -h, --help      Show this help message
+  -h, --help      Show this help
 
 %sEXAMPLES%s
   mdview README.md
@@ -900,96 +1017,90 @@ func usage() {
   curl -s https://raw.githubusercontent.com/cli/cli/trunk/README.md | mdview
 
 `,
-		bold+fgBrightMagenta, reset,
-		bold+fgBrightWhite, reset,
-		bold+fgBrightWhite, reset,
-		bold+fgBrightWhite, reset,
-	)
+                bold+fgBrightMagenta, reset,
+                bold+fgBrightWhite, reset,
+                bold+fgBrightWhite, reset,
+                bold+fgBrightWhite, reset,
+        )
 }
 
-// parseArgs splits os.Args[1:] into (width, file-or-empty, error).
-// width==0 means "auto-detect".
 func parseArgs() (width int, file string, err error) {
-	args := os.Args[1:]
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "-h" || a == "--help":
-			usage()
-			os.Exit(0)
-		case a == "-w" || a == "--width":
-			if i+1 >= len(args) {
-				return 0, "", fmt.Errorf("flag %q requires a numeric argument", a)
-			}
-			i++
-			n, nerr := strconv.Atoi(args[i])
-			if nerr != nil || n < 20 {
-				return 0, "", fmt.Errorf("--width must be an integer >= 20, got %q", args[i])
-			}
-			width = n
-		case strings.HasPrefix(a, "--width="):
-			val := strings.TrimPrefix(a, "--width=")
-			n, nerr := strconv.Atoi(val)
-			if nerr != nil || n < 20 {
-				return 0, "", fmt.Errorf("--width must be an integer >= 20, got %q", val)
-			}
-			width = n
-		case strings.HasPrefix(a, "-w="):
-			val := strings.TrimPrefix(a, "-w=")
-			n, nerr := strconv.Atoi(val)
-			if nerr != nil || n < 20 {
-				return 0, "", fmt.Errorf("-w must be an integer >= 20, got %q", val)
-			}
-			width = n
-		case strings.HasPrefix(a, "-"):
-			return 0, "", fmt.Errorf("unknown flag %q", a)
-		default:
-			if file != "" {
-				return 0, "", fmt.Errorf("unexpected argument %q (only one file at a time)", a)
-			}
-			file = a
-		}
-	}
-	return width, file, nil
+        args := os.Args[1:]
+        for i := 0; i < len(args); i++ {
+                a := args[i]
+                switch {
+                case a == "-h" || a == "--help":
+                        usage()
+                        os.Exit(0)
+                case a == "-w" || a == "--width":
+                        if i+1 >= len(args) {
+                                return 0, "", fmt.Errorf("flag %q requires a number", a)
+                        }
+                        i++
+                        n, e := strconv.Atoi(args[i])
+                        if e != nil || n < 20 {
+                                return 0, "", fmt.Errorf("--width must be an integer ≥ 20")
+                        }
+                        width = n
+                case strings.HasPrefix(a, "--width="):
+                        n, e := strconv.Atoi(strings.TrimPrefix(a, "--width="))
+                        if e != nil || n < 20 {
+                                return 0, "", fmt.Errorf("--width must be an integer ≥ 20")
+                        }
+                        width = n
+                case strings.HasPrefix(a, "-w="):
+                        n, e := strconv.Atoi(strings.TrimPrefix(a, "-w="))
+                        if e != nil || n < 20 {
+                                return 0, "", fmt.Errorf("-w must be an integer ≥ 20")
+                        }
+                        width = n
+                case strings.HasPrefix(a, "-"):
+                        return 0, "", fmt.Errorf("unknown flag %q", a)
+                default:
+                        if file != "" {
+                                return 0, "", fmt.Errorf("only one file at a time")
+                        }
+                        file = a
+                }
+        }
+        return
 }
 
 func main() {
-	width, file, err := parseArgs()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%serror:%s %v\n\n", fgRed+bold, reset, err)
-		usage()
-		os.Exit(1)
-	}
+        width, file, err := parseArgs()
+        if err != nil {
+                fmt.Fprintf(os.Stderr, "%serror:%s %v\n\n", bold+fgRed, reset, err)
+                usage()
+                os.Exit(1)
+        }
 
-	// Resolve render width: explicit flag > tty query > 80-col fallback.
-	renderWidth := width
-	if renderWidth == 0 {
-		renderWidth = termWidth()
-	}
+        w := width
+        if w == 0 {
+                w = termWidth()
+        }
 
-	var src string
-	if file != "" {
-		data, rerr := os.ReadFile(file)
-		if rerr != nil {
-			fmt.Fprintf(os.Stderr, "%serror:%s cannot read %q: %v\n", fgRed+bold, reset, file, rerr)
-			os.Exit(1)
-		}
-		src = string(data)
-	} else {
-		// No file — try stdin
-		stat, serr := os.Stdin.Stat()
-		if serr != nil || (stat.Mode()&os.ModeCharDevice) != 0 {
-			usage()
-			os.Exit(1)
-		}
-		scanner := bufio.NewScanner(os.Stdin)
-		var b strings.Builder
-		for scanner.Scan() {
-			b.WriteString(scanner.Text())
-			b.WriteByte('\n')
-		}
-		src = b.String()
-	}
+        var src string
+        if file != "" {
+                data, e := os.ReadFile(file)
+                if e != nil {
+                        fmt.Fprintf(os.Stderr, "%serror:%s cannot read %q: %v\n", bold+fgRed, reset, file, e)
+                        os.Exit(1)
+                }
+                src = string(data)
+        } else {
+                stat, e := os.Stdin.Stat()
+                if e != nil || (stat.Mode()&os.ModeCharDevice) != 0 {
+                        usage()
+                        os.Exit(1)
+                }
+                var b strings.Builder
+                sc := bufio.NewScanner(os.Stdin)
+                for sc.Scan() {
+                        b.WriteString(sc.Text())
+                        b.WriteByte('\n')
+                }
+                src = b.String()
+        }
 
-	fmt.Print(render(src, renderWidth))
+        fmt.Print(render(src, w))
 }
