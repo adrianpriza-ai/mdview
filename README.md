@@ -5,17 +5,27 @@
 Render Markdown files in your terminal with ANSI color and formatting.
 Zero external dependencies — pure Go stdlib.
 
+## Repository layout
+
+```
+tools/mdview/
+├── main.go    # CLI entry point
+├── render.go  # Rendering engine
+├── go.mod
+└── README.md
+```
+
 ## Build
 
 ```bash
-cd mdview
+cd tools/mdview
 go build -o mdview .
 ```
 
 Or install to `$GOPATH/bin`:
 
 ```bash
-go install .
+go install github.com/adrianpriza-ai/mdview@latest
 ```
 
 ## Usage
@@ -26,17 +36,17 @@ cat README.md | mdview
 ```
 
 `mdview` reads from a file path or from stdin when no path is given.
+Terminal width is detected automatically via `TIOCGWINSZ` with a fallback of
+80 columns. Use `--width` to override.
 
-Terminal width is detected automatically via `TIOCGWINSZ` (syscall) with a
-fallback of 80 columns. Use `--width` to override.
-
-### Flags
+#### Flags
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--width N` | `-w N` | Wrap output to N columns instead of auto-detected terminal width |
+| `--help` | `-h` | Show help |
 
-### Examples
+#### Examples
 
 ```bash
 # View a local file
@@ -44,7 +54,6 @@ mdview README.md
 
 # Specify a fixed render width
 mdview --width 100 README.md
-mdview -w 100 README.md
 
 # Pipe from stdin
 cat CHANGELOG.md | mdview
@@ -52,7 +61,7 @@ cat CHANGELOG.md | mdview
 # Pipe to a pager (preserves colors)
 mdview README.md | less -R
 
-# View a remote file
+# Fetch and render a remote file
 curl -s https://raw.githubusercontent.com/cli/cli/trunk/README.md | mdview
 ```
 
